@@ -67,6 +67,7 @@ const UPSTREAM_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 
 // Electron 注入其 Chromium 网络栈后，生产版会自动遵循系统代理/TUN。
 let electronNet = null;
+let electronCookies = null;
 const PROXY_TIMEOUT_MS = 30000;
 const WS_HANDSHAKE_TIMEOUT_MS = 15000;
 const PROXY_REQUEST_BODY_LIMIT_BYTES = 64 * 1024;
@@ -382,6 +383,29 @@ function createWebSocketProxyOptions(clientReq, targetHost, targetPath) {
     method: 'GET',
     headers
   };
+}
+
+async function prepareWebSocketCookies(clientReq, cookieStore) {
+  if (!cookieStore) return;
+  const { targetHost } = getWebSocketProxyTarget(clientReq);
+  let timeout;
+  try {
+    const cookies = await Promise.race([
+      cookieStore.get({ url: `https://${targetHost}${WS_PATH}` }),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Session cookie lookup timed out')), 5000);
+        timeout.unref?.();
+      })
+    ]);
+    // net.fetch owns the upstream HTTPS session. Secure cookies need not (and
+    // sometimes cannot) be copied onto localhost; use that same jar for WSS.
+    // URL-filtered cookies are sent only to the allowlisted Douyin push host.
+    const cookie = cookies.map(item => `${item.name}=${item.value}`).join('; ');
+    if (cookie) clientReq.headers.cookie = cookie;
+    else delete clientReq.headers.cookie;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function proxyWs(clientReq, clientSocket, clientHead, targetHost, runtime = {}) {
@@ -725,9 +749,16 @@ server.on('connection', socket => {
 });
 
 // ===== WebSocket 代理 =====
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   if (String(req.url || '').startsWith('/socket')) {
-    proxyWs(req, socket, head);
+    try {
+      await prepareWebSocketCookies(req, electronCookies);
+      if (!socket.destroyed) proxyWs(req, socket, head);
+    } catch {
+      // Never log session cookies or the credential-bearing request URL.
+      console.error('[ws proxy rejected] unable to read upstream session');
+      socket.destroy();
+    }
     return;
   }
   socket.destroy();
@@ -792,8 +823,9 @@ if (require.main === module) {
 }
 
 module.exports = server;
-server.setElectronNet = value => {
+server.setElectronNet = (value, cookieStore = null) => {
   electronNet = value;
+  electronCookies = cookieStore;
 };
 server.shutdown = callback => {
   for (const socket of activeSockets) socket.destroy();
@@ -815,6 +847,7 @@ server.__test = Object.freeze({
   getWebSocketProxyTarget,
   getForwardHeaders,
   createWebSocketProxyOptions,
+  prepareWebSocketCookies,
   readRequestBody,
   proxyHttpWithNodeHttps,
   proxyWs,

@@ -10,6 +10,10 @@ function sendSynchronousSettingsMutation(channel, value) {
 
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
+  getBarkState: () => ipcRenderer.invoke('bark:get-state'),
+  saveBarkSettings: config => ipcRenderer.invoke('bark:save', config),
+  testBarkPush: () => ipcRenderer.invoke('bark:test'),
+  notifyBarkWinner: winner => ipcRenderer.invoke('bark:notify-winner', winner),
   getPersistentSettingsInfo: () => ipcRenderer.invoke('settings:get-storage-info'),
   savePersistentSettingsSection: (section, value) => ipcRenderer.invoke('settings:save-section', section, value),
   setRemainingWinnerCount: (value) => sendSynchronousSettingsMutation('settings:set-remaining-winners', value),

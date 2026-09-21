@@ -1,4 +1,18 @@
+interface BarkPushResult {
+  success: boolean;
+  message: string;
+  at: number;
+}
+interface BarkSettingsState {
+  enabled: boolean;
+  configured: boolean;
+  lastResult: BarkPushResult | null;
+}
 interface ElectronAPI {
+  getBarkState: () => Promise<BarkSettingsState>;
+  saveBarkSettings: (config: { enabled?: boolean; pushUrl?: string }) => Promise<BarkSettingsState>;
+  testBarkPush: () => Promise<BarkPushResult>;
+  notifyBarkWinner: (winner: object) => Promise<BarkPushResult | { skipped: true }>;
   isElectron: true;
   getPersistentSettingsInfo: () => Promise<{
     directory: string;

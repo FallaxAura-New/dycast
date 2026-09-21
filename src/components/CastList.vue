@@ -50,7 +50,8 @@
 
 <script setup lang="ts">
 import CastTypeBtn from '@/components/CastTypeBtn/index.vue';
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { appendRecentItems, pruneVirtualScrollerCache } from '@/utils/virtualScrollerCache';
 import type { CastType } from './CastTypeBtn/type';
 import CastItem from './CastItem.vue';
 import { CastMethod, type DyMessage } from '@/core/dycast';
@@ -133,17 +134,14 @@ const MAX_DISPLAY_CASTS = 5000;
 const MAX_RENDERED_CASTS = 2000;
 const allCasts: DyMessage[] = [];
 const pendingCasts: DyMessage[] = [];
+let cachePruneBudget = 0;
 let renderRafId: number | null = null;
 // 滚动锁定
 let scrollRafId: number | null = null;
 // 添加弹幕
 const appendCasts = function (msgs: DyMessage[]) {
   if (!msgs || !msgs.length) return;
-  allCasts.push(...msgs);
-  // 限制 allCasts 上限
-  if (allCasts.length > MAX_DISPLAY_CASTS) {
-    allCasts.splice(0, allCasts.length - MAX_DISPLAY_CASTS);
-  }
+  appendRecentItems(allCasts, msgs, MAX_DISPLAY_CASTS);
   addCasts(msgs);
 };
 
@@ -151,6 +149,7 @@ const flushPendingCasts = function () {
   renderRafId = null;
   if (!pendingCasts.length) return;
   const incoming = pendingCasts.splice(0, pendingCasts.length);
+  cachePruneBudget += incoming.length;
   const overflow = Math.max(0, casts.value.length + incoming.length - MAX_RENDERED_CASTS);
   casts.value = overflow >= casts.value.length
     ? incoming.slice(-MAX_RENDERED_CASTS)
@@ -176,12 +175,13 @@ const addCasts = function (msgs: DyMessage[], isClear: boolean = false) {
       renderRafId = null;
     }
     pendingCasts.length = 0;
+    cachePruneBudget = 500;
     casts.value = list.slice(-MAX_RENDERED_CASTS);
     scheduleScrollToBottom();
   } else {
     if (!list.length) return;
     // 合并同一帧内的高频弹幕，最多每帧更新一次虚拟列表。
-    pendingCasts.push(...list);
+    appendRecentItems(pendingCasts, list, MAX_RENDERED_CASTS);
     scheduleRender();
   }
 };
@@ -196,6 +196,7 @@ const clearCasts = function () {
     renderRafId = null;
   }
   casts.value = [];
+  cachePruneBudget = 500;
 };
 onMounted(() => {
   // 初始化
@@ -212,6 +213,12 @@ onMounted(() => {
 
 /** 列表DOM Ref */
 const listRef = ref();
+watch(casts, items => {
+  if (cachePruneBudget < 500) return;
+  cachePruneBudget = 0;
+  // 等复用的行组件切换到新 ID 后清理，保留仍在列表中的实测高度。
+  pruneVirtualScrollerCache(listRef.value, items.map(item => String(item.id)));
+}, { flush: 'post' });
 
 // 判断是否滚动到底部的容差值，避免边缘情况
 const SCROLL_BTH = 50;
@@ -237,6 +244,8 @@ const scheduleScrollToBottom = function () {
 };
 
 onBeforeUnmount(() => {
+  handleScroll.cancel();
+  clearCasts();
   if (renderRafId !== null) cancelAnimationFrame(renderRafId);
   if (scrollRafId !== null) cancelAnimationFrame(scrollRafId);
 });

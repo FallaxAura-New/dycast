@@ -25,6 +25,13 @@ test('the tenth eligible comment auto-locks a batch and a previous winner can wi
     indexedDB: globalThis.indexedDB,
     BroadcastChannel: globalThis.BroadcastChannel
   };
+  const originalSetTimeout = globalThis.setTimeout;
+  const testTimers = new Set();
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    const timer = originalSetTimeout(() => { testTimers.delete(timer); callback(...args); }, delay);
+    testTimers.add(timer);
+    return timer;
+  };
   const originalWarn = console.warn;
   const memoryStorage = createMemoryStorage();
   globalThis.localStorage = memoryStorage;
@@ -160,6 +167,8 @@ test('the tenth eligible comment auto-locks a batch and a previous winner can wi
     store.revealLotteryWinner(cancelledBatch[0]);
     assert.equal(state.lotteryHistory.length, 0, '旧动画迟到回调不得写回已取消的中奖者');
     globalThis.window.electronAPI = undefined;
+    const barkWinners = [];
+    globalThis.window.electronAPI = { notifyBarkWinner: async winner => { barkWinners.push(winner); return { success: true }; } };
     appSettings.useSettings().value.remainingWinnerCount = 2;
     store.updateSettings({ lotteryWinnerCount: 1 });
 
@@ -190,6 +199,8 @@ test('the tenth eligible comment auto-locks a batch and a previous winner can wi
       const batch = store.prepareLotteryBatch(1);
       assert.equal(batch.length, 1);
       store.revealLotteryWinner(batch[0]);
+      store.revealLotteryWinner(batch[0]);
+      assert.equal(barkWinners.length, round, '重复揭晓不能再次发送 Bark 消息');
       store.closeLottery();
       assert.equal(state.activeDanmu.length, 11, '关闭中奖展示后不得清空仍在飞行的弹幕');
       store.stopCollecting();
@@ -208,10 +219,78 @@ test('the tenth eligible comment auto-locks a batch and a previous winner can wi
     assert.equal(state.lotteryCount, 2);
     assert.equal(state.lotteryHistory.length, 2);
     assert.equal(appSettings.useSettings().value.remainingWinnerCount, 0);
+
+    // Regression: ten raw comments with one badge-qualified viewer used to lock
+    // a one-person batch, silently ignoring the configured ten winners.
+    store.beginLiveSession('multi-winner-room');
+    appSettings.useSettings().value.remainingWinnerCount = 20;
+    appSettings.useSettings().value.lotteryBadgeLevel = 5;
+    store.updateSettings({ lotteryWinnerCount: 10 });
+    await Promise.resolve();
+    store.startCollecting();
+    let messageNumber = 0;
+    const pushCandidate = (user, badgeLevel) => store.pushDanmu({
+      id: `multi-message-${++messageNumber}`, secUid: `multi-user-${user}`,
+      nickname: `观众${user}`, avatar: `https://p3.douyinpic.com/avatar-${user}.jpg`,
+      content: '参与抽奖', timestamp: 900000 + messageNumber,
+      targetAnchorId: 'anchor', fansClub: [{ anchorId: 'anchor', level: badgeLevel }]
+    });
+    pushCandidate(1, 5);
+    for (let index = 2; index <= 10; index++) pushCandidate(index, 1);
+    assert.equal(state.energy, 10);
+    assert.equal(state.isLotteryActive, false, '10 条原始弹幕只有 1 位合格观众时不能缩水开奖');
+    assert.equal(store.getLotteryStartBlockReason(), 'not-enough-eligible-participants');
+    assert.deepEqual(store.prepareLotteryBatch(10), [], '直接锁定入口同样不得缩成单人');
+    for (let index = 0; index < 20; index++) pushCandidate(1, 5);
+    assert.equal(state.isLotteryActive, false, '同一观众刷屏不能补足多人名额');
+    assert.equal(store.getDanmuRetentionStats().eligibleParticipants, 1);
+    for (let index = 2; index <= 10; index++) {
+      pushCandidate(index, 5);
+      if (index < 10) assert.equal(state.isLotteryActive, false);
+    }
+    assert.equal(state.isLotteryActive, true, '第 10 位合格观众到来自动开启完整批次');
+    const multiBatch = store.prepareLotteryBatch(10);
+    assert.equal(multiBatch.length, 10);
+    assert.equal(new Set(multiBatch.map(winner => winner.secUid)).size, 10);
+    assert.ok(multiBatch.every(winner => winner.batchSize === 10));
+    assert.equal(appSettings.useSettings().value.remainingWinnerCount, 10);
+    assert.equal(store.prepareLotteryBatch(10).length, 10, '动画再次领取批次不能重复扣名额');
+    assert.equal(appSettings.useSettings().value.remainingWinnerCount, 10);
+    const notificationsBefore = barkWinners.length;
+    for (const winner of multiBatch) {
+      store.revealLotteryWinner(winner);
+      store.revealLotteryWinner(winner);
+    }
+    assert.equal(state.lotteryHistory.length, 12);
+    assert.equal(barkWinners.length - notificationsBefore, 10);
+    assert.ok(barkWinners.slice(-10).every(winner => winner.avatar.startsWith('https://p3.douyinpic.com/')));
+    store.closeLottery();
+    store.stopCollecting();
+    appSettings.useSettings().value.remainingWinnerCount = 0;
+    appSettings.useSettings().value.lotteryBadgeLevel = 0;
+    store.updateSettings({ lotteryUserCooldownEnabled: true });
+    await Promise.resolve();
+    store.startCollecting();
+    for (let index = 0; index < 60000; index++) {
+      store.pushDanmu({ id: `stress-${index}`, secUid: `stress-user-${index}`, nickname: '压力测试', avatar: '', content: '参与', timestamp: index + 1000000 });
+    }
+    const retained = store.getDanmuRetentionStats();
+    assert.equal(retained.pool, 50000);
+    assert.equal(retained.cooldownUsers, retained.pool, '被奖池淘汰的观众不得永久留在防刷 Map');
+    assert.equal(retained.eligible, retained.pool);
+    assert.equal(retained.eligibleParticipants, retained.pool, '去重人数索引随奖池淘汰，不得持续增长');
+    assert.equal(retained.recentMessages, 10000);
+    assert.equal(retained.displayed, 500);
+    assert.equal(retained.active, 100);
+    store.resetDanmuState();
+    assert.equal(store.getDanmuRetentionStats().cooldownUsers, 0);
+    assert.equal(store.getDanmuRetentionStats().eligibleParticipants, 0);
   } finally {
     await Promise.resolve();
     appSettings?.flushSettings();
     await server?.close();
+    for (const timer of testTimers) clearTimeout(timer);
+    globalThis.setTimeout = originalSetTimeout;
     globalThis.window = originalGlobals.window;
     globalThis.localStorage = originalGlobals.localStorage;
     globalThis.indexedDB = originalGlobals.indexedDB;

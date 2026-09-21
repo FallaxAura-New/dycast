@@ -134,11 +134,6 @@
                   />
                   <div class="winner-avatar-ring ring-a"></div>
                   <div class="winner-avatar-ring ring-b"></div>
-                  <div class="winner-badge">
-                    <svg viewBox="0 0 40 48">
-                      <path d="M25.6 1.5 4.8 27.4h13.5l-4.1 19.1L35.5 19.8H21.4z" fill="currentColor" />
-                    </svg>
-                  </div>
                 </div>
 
                 <div class="winner-information">
@@ -779,15 +774,6 @@ onBeforeUnmount(() => {
 .winner-avatar-ring.ring-b {
   inset: -12px; border: 2px dashed rgba(255, 244, 170, 0.7); animation: spinReverse 6s linear infinite;
 }
-
-.winner-badge {
-  position: absolute; z-index: 5; right: -3px; bottom: -3px;
-  display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%;
-  color: #fff8b3; background: linear-gradient(135deg, #ffb000, #ff6a00);
-  border: 3px solid #fff2a0; box-shadow: 0 0 9px #fff, 0 0 21px #ffae00;
-}
-
-.winner-badge svg { width: 23px; height: 28px; }
 
 /* 中奖信息 */
 .winner-information { position: relative; z-index: 3; min-width: 0; }

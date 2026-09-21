@@ -65,9 +65,11 @@ const RECENT_DANMU_KEY_LIMIT = 10000;
 type DisplayDanmuSubscriber = (danmu: Danmu | null) => void;
 const displayDanmuSubscribers = new Set<DisplayDanmuSubscriber>();
 const recentDanmuKeys = new Set<string>();
-const lotteryEligibilityState = reactive({ count: 0 });
+const lotteryEligibilityState = reactive({ count: 0, participants: 0 });
 let eligibleLotteryPool: Danmu[] = [];
 const eligibleLotteryMembers = new Set<Danmu>();
+const eligibleParticipantTickets = new Map<string, number>();
+let eligibleParticipantKeys = new WeakMap<Danmu, string>();
 const lastEligibleTicketAt = new Map<string, number>();
 let staleEligibleCandidateCount = 0;
 
@@ -829,9 +831,12 @@ function rememberDanmuDelivery(danmu: Danmu): boolean {
 function resetLotteryEligibilityIndex(): void {
   eligibleLotteryPool = [];
   eligibleLotteryMembers.clear();
+  eligibleParticipantTickets.clear();
+  eligibleParticipantKeys = new WeakMap();
   lastEligibleTicketAt.clear();
   staleEligibleCandidateCount = 0;
   lotteryEligibilityState.count = 0;
+  lotteryEligibilityState.participants = 0;
 }
 
 function compactEligibleLotteryPool(): void {
@@ -843,9 +848,22 @@ function compactEligibleLotteryPool(): void {
 function discardEligibleLotteryCandidates(candidates: Danmu[]): void {
   candidates.forEach(candidate => {
     if (!eligibleLotteryMembers.delete(candidate)) return;
+    const indexedKey = eligibleParticipantKeys.get(candidate);
+    if (indexedKey) {
+      const tickets = (eligibleParticipantTickets.get(indexedKey) || 1) - 1;
+      if (tickets > 0) eligibleParticipantTickets.set(indexedKey, tickets);
+      else eligibleParticipantTickets.delete(indexedKey);
+      eligibleParticipantKeys.delete(candidate);
+    }
+    const participantKey = getPrimaryParticipantKey(candidate);
+    // 只有这位用户最后一张票被淘汰才删除；较新的票仍须保留防刷时间。
+    if (lastEligibleTicketAt.get(participantKey) === (Number(candidate.timestamp) || 0)) {
+      lastEligibleTicketAt.delete(participantKey);
+    }
     staleEligibleCandidateCount++;
   });
   lotteryEligibilityState.count = eligibleLotteryMembers.size;
+  lotteryEligibilityState.participants = eligibleParticipantTickets.size;
   if (staleEligibleCandidateCount >= 1000) compactEligibleLotteryPool();
 }
 
@@ -860,7 +878,9 @@ function rebuildLotteryEligibilityIndex(): void {
   );
   eligibleLotteryPool = candidates;
   eligibleLotteryMembers.clear();
-  candidates.forEach(candidate => eligibleLotteryMembers.add(candidate));
+  eligibleParticipantTickets.clear();
+  eligibleParticipantKeys = new WeakMap();
+  candidates.forEach(candidate => addEligibleParticipant(candidate));
   lastEligibleTicketAt.clear();
   if (settings.lotteryUserCooldownEnabled) {
     candidates.forEach(candidate => {
@@ -872,6 +892,15 @@ function rebuildLotteryEligibilityIndex(): void {
   }
   staleEligibleCandidateCount = 0;
   lotteryEligibilityState.count = eligibleLotteryMembers.size;
+  lotteryEligibilityState.participants = eligibleParticipantTickets.size;
+}
+
+function addEligibleParticipant(candidate: Danmu): void {
+  if (eligibleLotteryMembers.has(candidate)) return;
+  eligibleLotteryMembers.add(candidate);
+  const key = getPrimaryParticipantKey(candidate);
+  eligibleParticipantKeys.set(candidate, key);
+  eligibleParticipantTickets.set(key, (eligibleParticipantTickets.get(key) || 0) + 1);
 }
 
 /** 满能量后的每条新弹幕只检查自身，避免反复扫描整个奖池。 */
@@ -891,8 +920,9 @@ function indexLotteryCandidate(candidate: Danmu): void {
   }
 
   eligibleLotteryPool.push(candidate);
-  eligibleLotteryMembers.add(candidate);
+  addEligibleParticipant(candidate);
   lotteryEligibilityState.count = eligibleLotteryMembers.size;
+  lotteryEligibilityState.participants = eligibleParticipantTickets.size;
 }
 
 function pushDisplayLocal(danmu: Danmu, persistSessionReset = true): Danmu | null {
@@ -965,8 +995,8 @@ function _pushLocal(danmu: Danmu) {
 
   persistState();
 
-  // 满能量立即自动开奖。若当前弹幕均被关键词或灯牌规则过滤，
-  // startLottery 会安全返回 false，并在下一条合格弹幕到来时再次尝试。
+  // 能量满且合格人数达到本轮目标才自动开奖；人数不足时继续收集，
+  // 下一条合格弹幕到来会再次尝试，不能静默缩减多人批次。
   if (state.totalDanmuCount >= settings.lotteryThreshold) startLottery();
 }
 
@@ -1088,6 +1118,19 @@ export function canStartLottery(): boolean {
   return getLotteryStartBlockReason() === null;
 }
 
+/** 只返回计数，供长场直播的内存诊断使用，不额外保留消息引用。 */
+export function getDanmuRetentionStats() {
+  return {
+    pool: state.lotteryPool.length,
+    eligible: eligibleLotteryMembers.size,
+    eligibleParticipants: eligibleParticipantTickets.size,
+    cooldownUsers: lastEligibleTicketAt.size,
+    recentMessages: recentDanmuKeys.size,
+    displayed: state.displayDanmu.length,
+    active: state.activeDanmu.length
+  };
+}
+
 export type LotteryStartBlockReason =
   | 'not-collecting'
   | 'already-active'
@@ -1095,6 +1138,7 @@ export type LotteryStartBlockReason =
   | 'no-remaining-winners'
   | 'empty-pool'
   | 'no-eligible-candidates'
+  | 'not-enough-eligible-participants'
   | null;
 
 export function getLotteryStartBlockReason(): LotteryStartBlockReason {
@@ -1107,20 +1151,14 @@ export function getLotteryStartBlockReason(): LotteryStartBlockReason {
     lotteryPoolSize: state.lotteryPool.length
   });
   if (baseReason) return baseReason;
-  return lotteryEligibilityState.count > 0 ? null : 'no-eligible-candidates';
+  if (lotteryEligibilityState.count === 0) return 'no-eligible-candidates';
+  const required = Math.min(settings.lotteryWinnerCount, normalizeWinnerCount(appSettings.value.remainingWinnerCount));
+  return lotteryEligibilityState.participants >= required ? null : 'not-enough-eligible-participants';
 }
 
 /** 达到阈值后同步锁定整批结果，再启动动画，避免资格检查与开奖之间出现竞态。 */
 export function startLottery(): boolean {
-  const baseReason = getAutomaticLotteryBlockReason({
-    isCollecting: state.isCollecting,
-    isLotteryActive: state.isLotteryActive,
-    totalDanmuCount: state.totalDanmuCount,
-    lotteryThreshold: settings.lotteryThreshold,
-    remainingWinnerCount: normalizeWinnerCount(appSettings.value.remainingWinnerCount),
-    lotteryPoolSize: state.lotteryPool.length
-  });
-  if (baseReason) return false;
+  if (getLotteryStartBlockReason()) return false;
   try {
     if (prepareLotteryBatch(settings.lotteryWinnerCount).length === 0) return false;
     // 锁定中奖结果后仍保留并继续接收飘屏弹幕；中奖层会覆盖在飘屏之上。
@@ -1151,6 +1189,7 @@ watch(
   [
     () => state.isCollecting,
     () => settings.lotteryThreshold,
+    () => settings.lotteryWinnerCount,
     () => appSettings.value.remainingWinnerCount
   ],
   () => {
@@ -1236,7 +1275,8 @@ export function prepareLotteryBatch(requestedCount = settings.lotteryWinnerCount
   }
   let pool = getCurrentEligiblePool();
   if (pool.length === 0) return [];
-  const targetCount = Math.min(normalizeLotteryWinnerCount(requestedCount), pool.length);
+  const targetCount = Math.min(normalizeLotteryWinnerCount(requestedCount), normalizeWinnerCount(appSettings.value.remainingWinnerCount));
+  if (targetCount <= 0 || lotteryEligibilityState.participants < targetCount) return [];
   const nextDrawNo = state.lotteryCount + 1;
   const wonAt = Date.now();
   const batchId = secureRecordId(`batch-${wonAt}`);
@@ -1263,6 +1303,8 @@ export function prepareLotteryBatch(requestedCount = settings.lotteryWinnerCount
     });
   }
 
+  // 别名去重仍可能合并不同主标识；候选不足时不能把多人批次静默缩小。
+  if (winners.length < targetCount) return [];
   // 先把待揭晓名单写入同源存储，再让主进程按 batchId 原子预留。任一边界崩溃后，
   // 重启都能用相同批次号继续或结算，既不会永久少名额，也不会重复返还。
   pendingLotteryBatch = winners.map(winner => markRaw(winner));
@@ -1305,6 +1347,8 @@ export function revealLotteryWinner(winner: Danmu): void {
   pendingLotteryBatch = pendingLotteryBatch.filter(item => item.winRecordId !== winner.winRecordId);
   // 中奖是关键记录，不能等待节流计时器，避免关闭窗口或重复实例覆盖后丢失。
   const persisted = persistState(true, true);
+  // 只在首次真正揭晓时推送；异步网络不能阻塞名额结算和下一位揭晓。
+  void window.electronAPI?.notifyBarkWinner?.({ ...pendingWinner }).catch(() => {});
   if (persisted && pendingLotteryBatch.length === 0 && pendingWinner.batchId) {
     try {
       finalizeLotteryBatch(pendingWinner.batchId, 0);

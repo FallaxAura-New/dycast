@@ -35,7 +35,7 @@
                 </span>
                 <span class="settings-tab-arrow">›</span>
               </button>
-              <div class="sidebar-note">常用设置按 Happy、显示、音频、AI 与运行数据分类，修改后自动保存。</div>
+              <div class="sidebar-note">常用设置分类管理。Bark 地址填写后点击保存，其余设置修改后自动保存。</div>
             </aside>
 
             <div class="settings-main">
@@ -588,6 +588,40 @@
               </div>
             </section>
 
+            <section v-show="activeTab === 'bark'" class="settings-section">
+              <div class="section-heading">
+                <span class="section-icon">↗</span>
+                <div><strong>Bark 中奖推送</strong><small>中奖揭晓后发送到手机</small></div>
+              </div>
+              <div class="setting-card">
+                <div class="setting-row">
+                  <div class="setting-text">
+                    <div class="setting-label">启用中奖推送</div>
+                    <div class="setting-desc">每位中奖者揭晓时推送一次，包含头像、昵称、抖音号（如有）、弹幕、轮次、时间和剩余名额；头像作为通知图标，加载失败不影响文字</div>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" :checked="barkState.enabled" :disabled="barkBusy || !barkState.configured || !canUseBark" @change="toggleBark" aria-label="启用 Bark 中奖推送" />
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                <div class="row-divider"></div>
+                <label class="ai-field">
+                  <span>Bark 推送地址</span>
+                  <input v-model="barkUrlInput" class="setting-input" type="password" autocomplete="off" maxlength="2048" :disabled="!canUseBark || barkBusy" :placeholder="barkState.configured ? '地址已安全保存，填写新地址可替换' : 'https://api.day.app/你的设备Key'" />
+                </label>
+                <p class="setting-desc">填写 Bark App 中的服务器地址与设备 Key，不含示例消息；支持自建服务，建议使用 HTTPS。地址在本机公共设置中加密保存，新版本可继续使用。</p>
+                <div class="setting-input-row">
+                  <button type="button" class="secondary-button" :disabled="!canUseBark || barkBusy || !barkUrlInput.trim()" @click="saveBarkAddress">保存地址</button>
+                  <button type="button" class="secondary-button" :disabled="!canUseBark || barkBusy || !barkState.configured || !!barkUrlInput.trim()" @click="testBark">{{ barkBusy ? '处理中…' : '发送测试' }}</button>
+                  <button type="button" class="secondary-button" :disabled="!canUseBark || barkBusy || !barkState.configured" @click="clearBark">清除地址</button>
+                </div>
+                <p v-if="!canUseBark" class="setting-desc">Bark 推送仅在桌面版中可用。</p>
+                <p v-if="barkFeedback" class="setting-desc" role="status">{{ barkFeedback }}</p>
+                <p v-if="barkState.lastResult" class="setting-desc" role="status">最近推送：{{ barkState.lastResult.message }} · {{ new Date(barkState.lastResult.at).toLocaleTimeString('zh-CN') }}</p>
+                <p class="ai-privacy-tip">启用后，中奖信息与公开头像链接会发送到你保存的 Bark 服务。失败原因仅在这里显示，不影响直播画面和抽奖。</p>
+              </div>
+            </section>
+
             <section v-show="activeTab === 'data'" class="settings-section data-settings-section">
               <div class="section-heading">
                 <span class="section-icon">⚠</span>
@@ -661,6 +695,8 @@ const lotteryAutoStatus = computed(() => {
   const remainingWinnerCount = Math.max(0, Math.round(Number(appSettings.value.remainingWinnerCount) || 0));
   const badgeLevel = Math.max(0, Math.round(Number(appSettings.value.lotteryBadgeLevel) || 0));
   const keyword = danmuSettings.lotteryKeyword.trim();
+  const batchCount = Math.min(danmuSettings.lotteryWinnerCount, remainingWinnerCount);
+  const batchRequirement = `每轮设置 ${danmuSettings.lotteryWinnerCount} 人，本轮按剩余名额最多抽 ${batchCount} 人。能量满后须凑齐 ${batchCount} 位符合条件的不同观众；不足时继续收集，不会因候选不足缩成单人。`;
 
   if (remainingWinnerCount <= 0) {
     return {
@@ -681,7 +717,7 @@ const lotteryAutoStatus = computed(() => {
       icon: 'i',
       badge: '有资格限制',
       title: '自动开奖已开启，需等待合格弹幕',
-      detail: `剩余 ${remainingWinnerCount} 个中奖名额。能量满后，只有满足“${requirements.join(' 且 ')}”的观众会进入候选池；无人满足时不会开奖。`
+      detail: `剩余 ${remainingWinnerCount} 个中奖名额。只有满足“${requirements.join(' 且 ')}”的观众会进入候选池；无人满足时不会开奖。${batchRequirement}`
     } as const;
   }
 
@@ -689,19 +725,65 @@ const lotteryAutoStatus = computed(() => {
     tone: 'ready',
     icon: '✓',
     badge: '配置正常',
-    title: '达到 Happy 阈值后将自动开奖',
-    detail: `剩余 ${remainingWinnerCount} 个中奖名额，当前不限关键词和灯牌等级。`
+    title: '能量和合格人数达标后自动开奖',
+    detail: `剩余 ${remainingWinnerCount} 个中奖名额，当前不限关键词和灯牌等级。${batchRequirement}`
   } as const;
 });
-type SettingsTabId = 'lottery' | 'audio' | 'ai' | 'data' | 'display';
+type SettingsTabId = 'lottery' | 'audio' | 'ai' | 'bark' | 'data' | 'display';
 const settingsTabs = [
   { id: 'lottery', icon: '🎰', label: 'Happy 设置', hint: '阈值与资格', description: '设置 Happy 频率和粉丝灯牌筛选规则', primary: true },
   { id: 'display', icon: '◫', label: '显示与礼物', hint: '窗口与显示效果', description: '调整弹幕阅读体验和礼物展示规则', primary: true },
   { id: 'audio', icon: '🎵', label: '音频管理', hint: '曲库与模式', description: '管理本地音频和各场景播放模式', primary: true },
   { id: 'ai', icon: '✦', label: 'AI 精选', hint: '观众互动弹幕', description: '配置精选弹幕使用的兼容 API', primary: true },
+  { id: 'bark', icon: '↗', label: 'Bark 推送', hint: '中奖手机通知', description: '设置中奖消息推送', primary: true },
   { id: 'data', icon: '↻', label: '运行重置', hint: '清零当前进度', description: '重置本轮充能与候选奖池', primary: true }
 ] as const;
 const activeTab = ref<SettingsTabId>('lottery');
+const canUseBark = Boolean(window.electronAPI?.getBarkState);
+const barkState = ref<BarkSettingsState>({ enabled: false, configured: false, lastResult: null });
+const barkUrlInput = ref('');
+const barkBusy = ref(false);
+const barkFeedback = ref('');
+
+async function loadBarkState(): Promise<void> {
+  if (!canUseBark) return;
+  try { barkState.value = await window.electronAPI!.getBarkState(); }
+  catch { barkFeedback.value = '读取 Bark 配置失败，请稍后重试'; }
+}
+
+async function updateBark(config: { enabled?: boolean; pushUrl?: string }): Promise<void> {
+  if (barkBusy.value || !canUseBark) return;
+  barkBusy.value = true;
+  barkFeedback.value = '';
+  try {
+    barkState.value = await window.electronAPI!.saveBarkSettings(config);
+    barkUrlInput.value = '';
+    barkFeedback.value = barkState.value.configured ? 'Bark 设置已保存' : 'Bark 地址已清除，推送已关闭';
+  } catch (error) {
+    barkFeedback.value = `保存失败：${(error as Error).message}`;
+  } finally { barkBusy.value = false; }
+}
+function saveBarkAddress(): void {
+  void updateBark({ pushUrl: barkUrlInput.value.trim(), enabled: true });
+}
+function clearBark(): void { void updateBark({ pushUrl: '' }); }
+function toggleBark(event: Event): void {
+  void updateBark({ enabled: (event.target as HTMLInputElement).checked });
+}
+async function testBark(): Promise<void> {
+  if (barkBusy.value || !canUseBark) return;
+  barkBusy.value = true;
+  barkFeedback.value = '';
+  try {
+    await window.electronAPI!.testBarkPush();
+    barkFeedback.value = '测试消息已发送，请查看手机';
+  } catch (error) { barkFeedback.value = (error as Error).message; }
+  finally {
+    await loadBarkState();
+    barkBusy.value = false;
+  }
+}
+watch(activeTab, tab => { if (tab === 'bark') void loadBarkState(); });
 const lotteryThresholdInput = ref(String(danmuSettings.lotteryThreshold));
 const badgeLevelInput = ref(String(appSettings.value.lotteryBadgeLevel));
 const thresholdPresets = [10, 100, 200, 500, 1000, 10000] as const;
@@ -1103,10 +1185,12 @@ watch(modelValue, visible => {
     previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void loadWindowDisplayState();
     void loadAICredentialState();
+    void loadBarkState();
     void loadPersistentSettingsInfo();
     void nextTick().then(() => settingsDialogRef.value?.focus());
   } else {
     stopAudioPreview();
+    barkUrlInput.value = '';
     if (previouslyFocusedElement?.isConnected) previouslyFocusedElement.focus();
     previouslyFocusedElement = null;
   }

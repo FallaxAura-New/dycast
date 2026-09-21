@@ -1,6 +1,6 @@
 {
   "name": "dycast",
-  "version": "26.9.16",
+  "version": "26.9.21-hotfix.2",
   "description": "抖音弹幕姬 - 实时弹幕互动 Happy 系统",
   "author": "SKMCJ",
   "private": true,
@@ -16,7 +16,7 @@
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "test": "node --test tests/*.test.cjs",
-    "check:electron": "node --check main.cjs && node --check preload.cjs && node --check server.cjs && node --check ai-curation.cjs && node --check persistent-settings.cjs && node --check remote-image-url.cjs && node --check renderer-recovery-policy.cjs && node --check response-body.cjs && node --check safe-zip.cjs && node --check trusted-renderer-url.cjs && node --check window-layout.cjs && node --check xlsx.cjs && node -e \"require('./xlsx.cjs')\" && node --check scripts/clean.cjs",
+    "check:electron": "node --check main.cjs && node --check preload.cjs && node --check server.cjs && node --check bark.cjs && node --check ai-curation.cjs && node --check persistent-settings.cjs && node --check remote-image-url.cjs && node --check renderer-recovery-policy.cjs && node --check response-body.cjs && node --check safe-zip.cjs && node --check trusted-renderer-url.cjs && node --check window-layout.cjs && node --check xlsx.cjs && node -e \"require('./xlsx.cjs')\" && node --check scripts/clean.cjs",
     "check": "npm run check:electron && npm run test && npm run type-check && npm run build-only",
     "clean": "node scripts/clean.cjs",
     "clean:all": "node scripts/clean.cjs --all",
@@ -35,6 +35,7 @@
     "files": [
       "main.cjs",
       "ai-curation.cjs",
+      "bark.cjs",
       "persistent-settings.cjs",
       "remote-image-url.cjs",
       "renderer-recovery-policy.cjs",

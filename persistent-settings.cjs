@@ -4,7 +4,7 @@ const path = require('path');
 const SETTINGS_FILE_NAME = 'settings.json';
 const SETTINGS_VERSION = 2;
 const MAX_SECTION_BYTES = 128 * 1024;
-const ALLOWED_SECTIONS = new Set(['app', 'danmu', 'audio', 'windows', 'lottery']);
+const ALLOWED_SECTIONS = new Set(['app', 'danmu', 'audio', 'windows', 'lottery', 'bark']);
 const MAX_LOTTERY_RESERVATIONS = 512;
 
 function isPlainObject(value) {

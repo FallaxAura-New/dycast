@@ -11,6 +11,36 @@ const proxy = server.__test;
 
 after(() => new Promise(resolve => server.shutdown(() => resolve())));
 
+test('Electron WSS reuses HTTPS session cookies even when localhost has no ttwid', async () => {
+  const req = { url: '/socket?__dycast_ws_host=webcast5-ws-web-lf.douyin.com',
+    headers: { cookie: 'csrf_session_id=old-local-value' } };
+  let requestedUrl;
+  await proxy.prepareWebSocketCookies(req, { get: async filter => {
+    requestedUrl = filter.url;
+    return [{ name: 'ttwid', value: 'test-anonymous-session' }, { name: 'csrf_session_id', value: 'new' }];
+  } });
+  assert.equal(requestedUrl, 'https://webcast5-ws-web-lf.douyin.com/webcast/im/push/v2/');
+  assert.equal(req.headers.cookie, 'ttwid=test-anonymous-session; csrf_session_id=new');
+});
+
+test('session cookies never target a caller-supplied non-Douyin host', async () => {
+  const req = { url: '/socket?__dycast_ws_host=evil.example', headers: { cookie: 'stale=1' } };
+  await proxy.prepareWebSocketCookies(req, { get: async filter => {
+    assert.equal(filter.url, 'https://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/');
+    return [];
+  } });
+  assert.equal(req.headers.cookie, undefined);
+});
+
+test('Node-only proxy keeps client cookies, while Electron lookup failures are surfaced', async () => {
+  const req = { url: '/socket', headers: { cookie: 'local=1' } };
+  await proxy.prepareWebSocketCookies(req, null);
+  assert.equal(req.headers.cookie, 'local=1');
+  await assert.rejects(proxy.prepareWebSocketCookies(req, { get: async () => {
+    throw new Error('cookie database unavailable');
+  } }), /cookie database unavailable/);
+});
+
 class FakeRequest extends EventEmitter {
   destroyed = false;
   ended = false;

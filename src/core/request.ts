@@ -2,7 +2,7 @@ import { getAbogus } from './abogus';
 import type { DyImInfo } from './dycast';
 import { decodeResponse } from './model';
 import { getMsToken } from './signature';
-import { makeUrlParams, parseLiveHtml } from './util';
+import { liveInfoFromRoom, makeUrlParams, parseLiveHtml, parseLiveViewerId } from './util';
 import { readResponseBytesBounded, readResponseTextBounded } from './boundedResponse';
 
 export const MAX_LIVE_HTML_BYTES = 8 * 1024 * 1024;
@@ -41,22 +41,41 @@ export const fetchLiveInfo = async function (id: string, signal?: AbortSignal) {
  * @returns
  */
 export const getLiveInfo = async function (id: string, signal?: AbortSignal) {
-  try {
+  let uniqueId = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // A first visit can initialize the anonymous session without returning room data.
     const html = await fetchLiveInfo(id, signal);
-    const first = parseLiveHtml(html);
-    if (first) return first;
-    else {
-      // 如第一次请求无 cookie => __ac_nonce，无法获得目标信息
-      // 但第一次请求会返回 cookie => __ac_nonce
-      // 请求第二次
-      const realHtml = await fetchLiveInfo(id, signal);
-      const second = parseLiveHtml(realHtml);
-      if (second) return second;
-      else throw new Error('Get Live Info Error');
-    }
-  } catch (err) {
-    return Promise.reject(err);
+    const info = parseLiveHtml(html, id);
+    if (info) return info;
+    uniqueId = parseLiveViewerId(html) || uniqueId;
   }
+  if (!uniqueId) {
+    throw new Error('未能获取抖音访客会话，请在浏览器检查该直播链接是否需要登录或验证，完成后重试');
+  }
+  // Some page variants omit room data. Query the same public room endpoint used by
+  // the page, retaining the real anonymous viewer ID (never fabricate credentials).
+  const params = makeUrlParams({
+    aid: 6383, app_name: 'douyin_web', live_id: 1, device_platform: 'web',
+    language: 'zh-CN', enter_from: 'web_live', cookie_enabled: true,
+    browser_language: 'zh-CN', browser_platform: 'Win32', browser_name: 'Chrome',
+    browser_version: '134.0.0.0', web_rid: id
+  });
+  const response = await fetch(`/dylive/webcast/room/web/enter/?${params}`, { signal });
+  if (!response.ok) throw new HttpRequestError(response.status);
+  const text = await readResponseTextBounded(response, MAX_LIVE_HTML_BYTES, signal);
+  let payload;
+  try { payload = JSON.parse(text); } catch {
+    throw new Error('抖音房间接口未返回有效数据，请检查网络，或在浏览器确认是否需要登录或验证');
+  }
+  if (payload?.status_code !== 0) {
+    throw new Error('抖音暂未允许读取房间信息，请在浏览器确认该直播链接可正常观看后重试');
+  }
+  // Only the requested room list, never similar_rooms/recommendations.
+  const rooms = payload.data?.data;
+  const room = Array.isArray(rooms) && rooms.length === 1 ? rooms[0] : null;
+  const info = room && liveInfoFromRoom({ room, anchor: payload.data?.user || room.owner }, uniqueId);
+  if (info) return info;
+  throw new Error('抖音未返回该房间的直播数据，请检查房间号、是否正在开播，以及网页是否需要登录');
 };
 
 /**

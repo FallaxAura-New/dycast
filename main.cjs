@@ -34,6 +34,7 @@ const { readResponseBuffer, readResponseText } = require('./response-body.cjs');
 const { fetchAllowedRemoteImage } = require('./remote-image-url.cjs');
 const { getTrustedRendererMode } = require('./trusted-renderer-url.cjs');
 const { createRendererRecoveryPolicy } = require('./renderer-recovery-policy.cjs');
+const { createBarkService } = require('./bark.cjs');
 
 const PORT = 15173;
 const APP_ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -699,6 +700,31 @@ function assertTrustedAppSender(event) {
 }
 
 const RENDERER_SETTING_SECTIONS = new Set(['app', 'danmu', 'audio']);
+const barkService = createBarkService({
+  getStore: getPersistentSettingsStore,
+  safeStorage,
+  fetchImpl: (url, options) => net.fetch(url, options)
+});
+ipcMain.handle('bark:get-state', event => {
+  assertTrustedAppSender(event);
+  return barkService.getState();
+});
+ipcMain.handle('bark:save', (event, config) => {
+  assertTrustedAppSender(event);
+  return barkService.save(config);
+});
+ipcMain.handle('bark:test', event => {
+  assertTrustedAppSender(event);
+  return barkService.test();
+});
+ipcMain.handle('bark:notify-winner', (event, winner) => {
+  assertTrustedAppSender(event);
+  if (!danmuWindow || danmuWindow.isDestroyed() || event.sender.id !== danmuWindow.webContents.id) {
+    throw new Error('只有抽奖窗口可以发送中奖推送');
+  }
+  const remaining = getPersistentSettingsStore().read().sections.app?.remainingWinnerCount;
+  return barkService.notifyWinner(winner, remaining);
+});
 const SETTINGS_FLUSH_TIMEOUT_MS = 1500;
 const settingsFlushReadySenderIds = new Set();
 const pendingSettingsFlushRequests = new Map();
@@ -1604,7 +1630,7 @@ async function startServer() {
   process.env.DYCAST_PORT = String(PORT);
   process.env.DYCAST_AUDIO_DIR = getAudioRoot();
   serverInstance = require(serverCjsPath);
-  serverInstance.setElectronNet?.(net);
+  serverInstance.setElectronNet?.(net, session.defaultSession.cookies);
   if (!serverInstance.startup || typeof serverInstance.startup.then !== 'function') {
     throw new Error('本地服务未返回可验证的启动状态');
   }
