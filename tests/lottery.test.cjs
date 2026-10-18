@@ -56,7 +56,7 @@ test('lottery threshold accepts 10 and clamps lower legacy values to 10', async 
 });
 
 test('automatic lottery attempts exactly at the minimum threshold', async () => {
-  const { shouldAttemptAutomaticLottery } = await lotteryPolicyModule;
+  const { getAutomaticLotteryBlockReason } = await lotteryPolicyModule;
   const base = {
     isCollecting: true,
     isLotteryActive: false,
@@ -65,8 +65,14 @@ test('automatic lottery attempts exactly at the minimum threshold', async () => 
     lotteryPoolSize: 10
   };
 
-  assert.equal(shouldAttemptAutomaticLottery({ ...base, totalDanmuCount: 9 }), false);
-  assert.equal(shouldAttemptAutomaticLottery({ ...base, totalDanmuCount: 10 }), true);
-  assert.equal(shouldAttemptAutomaticLottery({ ...base, totalDanmuCount: 10, remainingWinnerCount: 0 }), false);
-  assert.equal(shouldAttemptAutomaticLottery({ ...base, totalDanmuCount: 10, isLotteryActive: true }), false);
+  assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 9 }), 'threshold-not-reached');
+  assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10 }), null);
+  assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10, remainingWinnerCount: 0 }), 'no-remaining-winners');
+  assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10, isLotteryActive: true }), 'already-active');
+  assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10, isCollecting: false }), 'not-collecting');
+  assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10, lotteryPoolSize: 0 }), 'empty-pool');
+  for (const value of [NaN, Infinity, -1]) {
+    assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10, remainingWinnerCount: value }), 'no-remaining-winners');
+    assert.equal(getAutomaticLotteryBlockReason({ ...base, totalDanmuCount: 10, lotteryPoolSize: value }), 'empty-pool');
+  }
 });

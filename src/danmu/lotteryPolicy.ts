@@ -47,7 +47,3 @@ export function getAutomaticLotteryBlockReason(
   }
   return null;
 }
-
-export function shouldAttemptAutomaticLottery(state: AutomaticLotteryState): boolean {
-  return getAutomaticLotteryBlockReason(state) === null;
-}

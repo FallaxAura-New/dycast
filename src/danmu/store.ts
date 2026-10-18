@@ -1359,13 +1359,6 @@ export function revealLotteryWinner(winner: Danmu): void {
   }
 }
 
-/** 保留单人抽奖调用兼容性。 */
-export function drawLottery(): Danmu | null {
-  const winner = prepareLotteryBatch(1)[0] ?? null;
-  if (winner) revealLotteryWinner(winner);
-  return winner;
-}
-
 export function closeLottery() {
   if (cancelPendingLotteryBatch(true) < 0) return false;
   state.isLotteryActive = false;
